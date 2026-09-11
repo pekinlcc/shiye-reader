@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Back up reading positions only. The book library lives in external files and is far past the backup quota. -->
+<full-backup-content>
+    <include domain="sharedpref" path="reading.xml"/>
+</full-backup-content>

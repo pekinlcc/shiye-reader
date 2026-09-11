@@ -1,0 +1,28 @@
+# 构建产物与本地工具链
+build/
+dist/
+tools/
+downloads/
+__pycache__/
+*.pyc
+
+# 书库与原始书籍：版权内容，绝不入库
+library/
+电子书汇总/
+*.epub
+*.mobi
+*.azw3
+*.pdf
+
+# 真机验证产物：含截图与个人阅读记录
+verification/
+
+# 签名密钥
+*.keystore
+*.jks
+*.idsig
+
+# 系统垃圾
+.DS_Store
+.idea/
+*.iml
