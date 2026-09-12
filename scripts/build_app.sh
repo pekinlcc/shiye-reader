@@ -31,7 +31,7 @@ mkdir -p build/classes build/dex dist
 # Keep the optional test source in an array: the project path contains a space.
 TEST_SOURCES=()
 if [ -n "${READER_TEST_SOURCE:-}" ]; then TEST_SOURCES=("$READER_TEST_SOURCE"); fi
-"$JAVA_BIN/javac" -encoding UTF-8 -source 8 -target 8 -nowarn -bootclasspath "$ANDROID_JAR:$BT/core-lambda-stubs.jar" -d build/classes app/src/com/pekinlcc/reader/MainActivity.java ${TEST_SOURCES[@]+"${TEST_SOURCES[@]}"}
+"$JAVA_BIN/javac" -encoding UTF-8 -source 8 -target 8 -nowarn -bootclasspath "$ANDROID_JAR:$BT/core-lambda-stubs.jar" -d build/classes $(find app/src -name "*.java" | sort) ${TEST_SOURCES[@]+"${TEST_SOURCES[@]}"}
 "$JAVA_BIN/jar" cf build/classes.jar -C build/classes .
 "$JAVA_BIN/java" -cp "$BT/lib/d8.jar" com.android.tools.r8.D8 --min-api 26 --lib "$ANDROID_JAR" --output build/dex build/classes.jar
 cp build/base.apk build/unsigned.apk

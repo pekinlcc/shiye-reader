@@ -1,4 +1,4 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="com.pekinlcc.reader" android:versionCode="5" android:versionName="1.4">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="com.pekinlcc.reader" android:versionCode="9" android:versionName="1.7">
 <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="34"/>
 <application android:debuggable="false" android:label="拾页" android:theme="@android:style/Theme.Material.Light.NoActionBar" android:allowBackup="true" android:fullBackupContent="@xml/backup_rules" android:dataExtractionRules="@xml/data_extraction_rules" android:usesCleartextTraffic="false" android:enableOnBackInvokedCallback="true" android:icon="@drawable/icon" android:roundIcon="@drawable/icon">
 <activity android:name=".MainActivity" android:exported="true" android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboardHidden|keyboard|navigation|uiMode|density|fontScale|layoutDirection|locale"><intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter></activity>

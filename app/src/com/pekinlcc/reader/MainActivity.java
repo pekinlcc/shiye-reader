@@ -19,6 +19,7 @@ public class MainActivity extends Activity {
     volatile PdfRenderer pdf; ParcelFileDescriptor pdfFd; int pdfPage; String pdfId; TextView pageLabel;
     LinearLayout pdfLayout; final ExecutorService worker=Executors.newSingleThreadExecutor(); int renderVersion=0;
     final Object pdfLock=new Object();
+    static final ExecutorService io=Executors.newSingleThreadExecutor(); static final int REQ_IMPORT=4011;
     LinearLayout pdfTop,pdfBottom; String chromeTheme="paper"; Object backCallback; int safeTop=0,safeBottom=0;
 
     @Override public void onCreate(Bundle state){
@@ -146,6 +147,72 @@ public class MainActivity extends Activity {
         @JavascriptInterface public void reload(){runOnUiThread(()->web.reload());}
         /** Called by the page so the system bars follow whatever surface is on screen. */
         @JavascriptInterface public void setChrome(String theme){final String t=theme;runOnUiThread(()->{if(pdf==null)applyChrome(t);});}
+        @JavascriptInterface public void importBooks(){runOnUiThread(()->pickBooks());}
+        @JavascriptInterface public void confirmRemove(String id,String title){
+            if(id==null||!id.matches("[a-f0-9]{16}"))return;final String bid=id,name=title==null?"":title;
+            runOnUiThread(()->{if(isFinishing())return;new AlertDialog.Builder(MainActivity.this)
+                .setTitle("移除《"+name+"》？")
+                .setMessage("会删除设备上的这本书和它的阅读进度。你电脑上的原始文件不受影响。")
+                .setPositiveButton("移除",(d,w)->removeBook(bid)).setNegativeButton("取消",null).show();});
+        }
+    }
+
+    // ---- importing -----------------------------------------------------------
+    void pickBooks(){
+        Intent i=new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        i.addCategory(Intent.CATEGORY_OPENABLE);i.setType("*/*");
+        i.putExtra(Intent.EXTRA_MIME_TYPES,new String[]{"application/epub+zip","application/pdf","application/octet-stream"});
+        i.putExtra(Intent.EXTRA_ALLOW_MULTIPLE,true);
+        try{startActivityForResult(i,REQ_IMPORT);}
+        catch(Exception e){Toast.makeText(this,"找不到文件选择器",Toast.LENGTH_LONG).show();}
+    }
+    @Override protected void onActivityResult(int req,int res,Intent data){
+        super.onActivityResult(req,res,data);
+        if(req!=REQ_IMPORT)return;
+        if(res!=RESULT_OK||data==null){jsCall("importDone","0","");return;}
+        final List<Uri> uris=new ArrayList<>();
+        if(data.getClipData()!=null){android.content.ClipData c=data.getClipData();for(int i=0;i<c.getItemCount();i++){Uri u=c.getItemAt(i).getUri();if(u!=null)uris.add(u);}}
+        else if(data.getData()!=null)uris.add(data.getData());
+        if(uris.isEmpty()){jsCall("importDone","0","");return;}
+        runImport(uris);
+    }
+    void runImport(final List<Uri> uris){
+        jsCall("importProgress","准备导入 "+uris.size()+" 个文件…");
+        io.execute(()->{
+            int ok=0;final StringBuilder errs=new StringBuilder();
+            for(int i=0;i<uris.size();i++){
+                final String tag="("+(i+1)+"/"+uris.size()+") ";
+                try{
+                    JSONObject entry=Importer.ingest(MainActivity.this,library,uris.get(i),m->jsCall("importProgress",tag+m));
+                    Importer.merge(library,entry);ok++;
+                    int skipped=entry.optInt("skipped",0);
+                    if(skipped>0){if(errs.length()>0)errs.append("；");
+                        errs.append("《"+entry.optString("title")+"》有 "+skipped+" 章文件缺失，已跳过");}
+                    jsCall("importProgress",tag+"已加入《"+entry.optString("title")+"》");
+                }catch(Throwable t){
+                    String m=t.getMessage();
+                    if(errs.length()>0)errs.append("；");
+                    errs.append(m==null?t.getClass().getSimpleName():m);
+                }
+            }
+            jsCall("importDone",String.valueOf(ok),errs.toString());
+        });
+    }
+    void removeBook(final String id){
+        io.execute(()->{
+            try{Importer.remove(library,id);prefs.edit().remove("pdf_"+id).apply();jsCall("bookRemoved",id,"");}
+            catch(Throwable t){jsCall("bookRemoved",id,String.valueOf(t.getMessage()));}
+        });
+    }
+    /** Calls a page function with string arguments, safely quoted. */
+    void jsCall(String fn,String... args){
+        StringBuilder sb=new StringBuilder(fn).append('(');
+        for(int i=0;i<args.length;i++){if(i>0)sb.append(',');sb.append(JSONObject.quote(args[i]==null?"":args[i]));}
+        sb.append(')');
+        // org.json does not escape these two, and they are not legal inside a JS
+        // string literal on older WebViews — one bad book title would break the call.
+        final String js=sb.toString().replace("\u2028","\\u2028").replace("\u2029","\\u2029");
+        runOnUiThread(()->{if(web!=null&&!isFinishing()&&!isDestroyed())web.evaluateJavascript(js,null);});
     }
 
     // ---- theming -------------------------------------------------------------
