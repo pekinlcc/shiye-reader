@@ -17,14 +17,17 @@ import org.json.*;
 public class MainActivity extends Activity {
     WebView web; PdfCanvas pdfCanvas; Button pdfPrev,pdfNext; boolean pdfLoading; File library; android.content.SharedPreferences prefs;
     volatile PdfRenderer pdf; ParcelFileDescriptor pdfFd; int pdfPage; String pdfId; TextView pageLabel;
-    LinearLayout pdfLayout; final ExecutorService worker=Executors.newSingleThreadExecutor(); int renderVersion=0;
+    LinearLayout pdfLayout; final ExecutorService worker=Executors.newSingleThreadExecutor(); volatile int renderVersion=0;
     final Object pdfLock=new Object();
     static final ExecutorService io=Executors.newSingleThreadExecutor(); static final int REQ_IMPORT=4011;
-    LinearLayout pdfTop,pdfBottom; String chromeTheme="paper"; Object backCallback; int safeTop=0,safeBottom=0;
+    LinearLayout pdfTop,pdfBottom; String chromeTheme="paper"; Object backCallback; int safeTop=0,safeBottom=0,safeLeft=0,safeRight=0; Dialog removeDialog;
+    final View.OnApplyWindowInsetsListener insetsListener=(v,insets)->{measureInsets(insets);return insets;};
 
     @Override public void onCreate(Bundle state){
         super.onCreate(state);
-        prefs=getSharedPreferences("reading",MODE_PRIVATE); library=new File(getExternalFilesDir(null),"library");library.mkdirs();
+        prefs=getSharedPreferences("reading",MODE_PRIVATE);
+        File root=getExternalFilesDir(null); // null while shared storage is unavailable
+        library=new File(root!=null?root:getFilesDir(),"library");library.mkdirs();
         chromeTheme="paper";
         if(Build.VERSION.SDK_INT>=28){
             WindowManager.LayoutParams lp=getWindow().getAttributes();
@@ -38,7 +41,7 @@ public class MainActivity extends Activity {
         web.getSettings().setJavaScriptEnabled(true);web.getSettings().setDomStorageEnabled(true);
         web.getSettings().setAllowFileAccess(false);web.getSettings().setAllowContentAccess(false);
         web.addJavascriptInterface(new Bridge(),"Reader");
-        web.setOnApplyWindowInsetsListener((v,insets)->{measureInsets(insets);return insets;});
+        web.setOnApplyWindowInsetsListener(insetsListener);
         web.setWebViewClient(new WebViewClient(){
             @Override public WebResourceResponse shouldInterceptRequest(WebView v,WebResourceRequest r){
                 Uri u=r.getUrl();try {
@@ -49,6 +52,7 @@ public class MainActivity extends Activity {
                     else stream=getAssets().open(path.equals("/")?"index.html":path.substring(1));
                     String m=mime(path);
                     if(m==null){BufferedInputStream b=new BufferedInputStream(stream,2048);m=sniff(b);stream=b;}
+                    if("text/html".equals(m)&&path.startsWith("/library/"))stream=Html.normalize(stream); // XHTML fixes + real charset -> UTF-8
                     return response(m,charset(m),stream);
                 }catch(Exception e){return new WebResourceResponse("text/plain","UTF-8",404,"Not Found",Collections.emptyMap(),new ByteArrayInputStream("文件尚未导入".getBytes(java.nio.charset.StandardCharsets.UTF_8)));}
             }
@@ -72,22 +76,24 @@ public class MainActivity extends Activity {
 
     /** The window now covers the cutout, so the page must inset its own content instead. */
     void measureInsets(android.view.WindowInsets insets){
-        int top=0,bottom=0;
+        int top=0,bottom=0,left=0,right=0;
         if(Build.VERSION.SDK_INT>=30){
-            top=insets.getInsets(android.view.WindowInsets.Type.displayCutout()).top;
-            bottom=insets.getInsets(android.view.WindowInsets.Type.mandatorySystemGestures()).bottom;
+            android.graphics.Insets c=insets.getInsets(android.view.WindowInsets.Type.displayCutout());
+            top=c.top;left=c.left;right=c.right;
+            bottom=Math.max(c.bottom,insets.getInsets(android.view.WindowInsets.Type.mandatorySystemGestures()).bottom);
         }else if(Build.VERSION.SDK_INT>=28){
             android.view.DisplayCutout c=insets.getDisplayCutout();
-            if(c!=null)top=c.getSafeInsetTop();
+            if(c!=null){top=c.getSafeInsetTop();bottom=c.getSafeInsetBottom();left=c.getSafeInsetLeft();right=c.getSafeInsetRight();}
         }
-        if(top==safeTop&&bottom==safeBottom)return;
-        safeTop=top;safeBottom=bottom;pushSafeArea();
-        if(pdfLayout!=null)pdfLayout.setPadding(0,safeTop,0,safeBottom);
+        // In landscape a punch-hole sits on a side edge, so the sides matter as much as the top.
+        if(top==safeTop&&bottom==safeBottom&&left==safeLeft&&right==safeRight)return;
+        safeTop=top;safeBottom=bottom;safeLeft=left;safeRight=right;pushSafeArea();
+        if(pdfLayout!=null)pdfLayout.setPadding(safeLeft,safeTop,safeRight,safeBottom);
     }
     void pushSafeArea(){
         float d=getResources().getDisplayMetrics().density;
-        web.evaluateJavascript("document.documentElement.style.setProperty('--safe-top','"+(safeTop/d)
-            +"px');document.documentElement.style.setProperty('--safe-bottom','"+(safeBottom/d)+"px')",null);
+        web.evaluateJavascript("(function(s){s.setProperty('--safe-top','"+(safeTop/d)+"px');s.setProperty('--safe-bottom','"+(safeBottom/d)
+            +"px');s.setProperty('--safe-left','"+(safeLeft/d)+"px');s.setProperty('--safe-right','"+(safeRight/d)+"px')})(document.documentElement.style)",null);
     }
     WebResourceResponse response(String mime,String enc,InputStream data){Map<String,String> h=new HashMap<>();h.put("Content-Security-Policy","default-src 'self' data: blob:; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-src 'self'");return new WebResourceResponse(mime,enc,200,"OK",h,data);}
 
@@ -150,7 +156,8 @@ public class MainActivity extends Activity {
         @JavascriptInterface public void importBooks(){runOnUiThread(()->pickBooks());}
         @JavascriptInterface public void confirmRemove(String id,String title){
             if(id==null||!id.matches("[a-f0-9]{16}"))return;final String bid=id,name=title==null?"":title;
-            runOnUiThread(()->{if(isFinishing())return;new AlertDialog.Builder(MainActivity.this)
+            runOnUiThread(()->{if(isFinishing()||(removeDialog!=null&&removeDialog.isShowing()))return;
+                removeDialog=new AlertDialog.Builder(MainActivity.this)
                 .setTitle("移除《"+name+"》？")
                 .setMessage("会删除设备上的这本书和它的阅读进度。你电脑上的原始文件不受影响。")
                 .setPositiveButton("移除",(d,w)->removeBook(bid)).setNegativeButton("取消",null).show();});
@@ -182,7 +189,9 @@ public class MainActivity extends Activity {
             int ok=0;final StringBuilder errs=new StringBuilder();
             for(int i=0;i<uris.size();i++){
                 final String tag="("+(i+1)+"/"+uris.size()+") ";
+                String name=null;
                 try{
+                    name=Importer.displayName(MainActivity.this,uris.get(i));
                     JSONObject entry=Importer.ingest(MainActivity.this,library,uris.get(i),m->jsCall("importProgress",tag+m));
                     Importer.merge(library,entry);ok++;
                     int skipped=entry.optInt("skipped",0);
@@ -192,7 +201,9 @@ public class MainActivity extends Activity {
                 }catch(Throwable t){
                     String m=t.getMessage();
                     if(errs.length()>0)errs.append("；");
-                    errs.append(m==null?t.getClass().getSimpleName():m);
+                    // With several files picked, a bare reason does not say which one failed.
+                    if(name!=null)errs.append(name).append("：");
+                    errs.append(t instanceof OutOfMemoryError?"文件太大，内存不足":m==null?t.getClass().getSimpleName():m);
                 }
             }
             jsCall("importDone",String.valueOf(ok),errs.toString());
@@ -260,7 +271,7 @@ public class MainActivity extends Activity {
             if(pdf.getPageCount()<1)throw new IOException("这个 PDF 没有可显示的页面");
             pdfPage=Math.max(0,Math.min(prefs.getInt("pdf_"+id,0),pdf.getPageCount()-1));
             applyChrome(theme);
-            pdfLayout=new LinearLayout(this);pdfLayout.setOrientation(1);pdfLayout.setBackgroundColor(bg);
+            pdfLayout=new LinearLayout(this);pdfLayout.setOrientation(1);pdfLayout.setBackgroundColor(bg);pdfLayout.setOnApplyWindowInsetsListener(insetsListener); // the WebView is detached meanwhile
             LinearLayout top=new LinearLayout(this);pdfTop=top;top.setGravity(Gravity.CENTER_VERTICAL);Button back=button("‹ 书架",theme,()->closePdf());top.addView(back);
             TextView t=new TextView(this);t.setText(title);t.setTextSize(17);t.setSingleLine(true);t.setTextColor(ink);t.setEllipsize(android.text.TextUtils.TruncateAt.END);top.addView(t,new LinearLayout.LayoutParams(0,dp(56),1));pdfLayout.addView(top);
             pdfCanvas=new PdfCanvas(this,matOf(theme));
@@ -275,7 +286,7 @@ public class MainActivity extends Activity {
                 if(!prefs.getBoolean("zenHintedPdf",false)){prefs.edit().putBoolean("zenHintedPdf",true).apply();
                     Toast.makeText(this,"全屏阅读中 · 点击页面可显示上下菜单栏",Toast.LENGTH_LONG).show();}
             }
-            pdfLayout.setPadding(0,safeTop,0,safeBottom);setContentView(pdfLayout);renderPdf();
+            pdfLayout.setPadding(safeLeft,safeTop,safeRight,safeBottom);setContentView(pdfLayout);renderPdf();
         }catch(Throwable e){
             releasePdf();applyChrome("paper");setContentView(web);web.evaluateJavascript("exitPdf()",null);
             if(!isFinishing())new AlertDialog.Builder(this).setMessage("无法打开 PDF："+e.getMessage()).setPositiveButton("好",null).show();
@@ -297,13 +308,15 @@ public class MainActivity extends Activity {
             new int[][]{new int[]{-android.R.attr.state_enabled},new int[0]},
             new int[]{(ink&0x00FFFFFF)|0x4D000000,ink}));
         b.setOnClickListener(v->r.run());return b;}
-    void movePdf(int delta){if(pdf==null||pdfLoading)return;int next=Math.max(0,Math.min(pdf.getPageCount()-1,pdfPage+delta));if(next!=pdfPage){pdfPage=next;renderPdf();}}
-    void jumpPdf(){if(pdf==null||pdfLoading)return;EditText e=new EditText(this);e.setInputType(2);e.setHint("1 — "+pdf.getPageCount());new AlertDialog.Builder(this).setTitle("跳转页码").setView(e).setPositiveButton("前往",(d,w)->{if(pdf==null)return;try{pdfPage=Math.max(0,Math.min(pdf.getPageCount()-1,Integer.parseInt(e.getText().toString().trim())-1));renderPdf();}catch(Exception ignored){}}).setNegativeButton("取消",null).show();}
+    /** Turns never wait for the current render: a newer request supersedes it, so fast swipes are not dropped. */
+    void movePdf(int delta){if(pdf==null)return;int next=Math.max(0,Math.min(pdf.getPageCount()-1,pdfPage+delta));if(next!=pdfPage){pdfPage=next;renderPdf();}}
+    void jumpPdf(){if(pdf==null)return;EditText e=new EditText(this);e.setInputType(2);e.setHint("1 — "+pdf.getPageCount());new AlertDialog.Builder(this).setTitle("跳转页码").setView(e).setPositiveButton("前往",(d,w)->{if(pdf==null)return;try{pdfPage=Math.max(0,Math.min(pdf.getPageCount()-1,Integer.parseInt(e.getText().toString().trim())-1));renderPdf();}catch(Exception ignored){}}).setNegativeButton("取消",null).show();}
 
     void renderPdf(){
         final int page=pdfPage,version=++renderVersion;final PdfRenderer renderer=pdf;
-        pdfLoading=true;pdfPrev.setEnabled(false);pdfNext.setEnabled(false);pageLabel.setText("正在加载第 "+(page+1)+" 页…");
+        pdfLoading=true;pdfPrev.setEnabled(page>0);pdfNext.setEnabled(page<renderer.getPageCount()-1);pageLabel.setText("正在加载第 "+(page+1)+" 页…");
         worker.execute(()->{
+            if(version!=renderVersion)return; // superseded while queued
             try{
                 Bitmap bitmap;
                 synchronized(pdfLock){
@@ -315,7 +328,7 @@ public class MainActivity extends Activity {
                         long budget=Math.max(2L*1024*1024,Runtime.getRuntime().maxMemory()/24); // pixels one page may use
                         if((long)w*h>budget){double k=Math.sqrt((double)budget/((long)w*h));w=Math.max(1,(int)(w*k));h=Math.max(1,(int)(h*k));}
                         try{bitmap=Bitmap.createBitmap(w,h,Bitmap.Config.ARGB_8888);}
-                        catch(OutOfMemoryError oom){bitmap=Bitmap.createBitmap(Math.max(1,w/2),Math.max(1,h/2),Bitmap.Config.RGB_565);}
+                        catch(OutOfMemoryError oom){bitmap=Bitmap.createBitmap(Math.max(1,w/2),Math.max(1,h/2),Bitmap.Config.ARGB_8888);} // PdfRenderer only renders into ARGB_8888
                         bitmap.eraseColor(Color.WHITE);
                         p.render(bitmap,null,null,PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY);
                     }finally{p.close();}
@@ -341,10 +354,9 @@ public class MainActivity extends Activity {
     }
 
     class PdfCanvas extends View {
-        Bitmap bitmap;float zoom=1,offsetX=0,offsetY=0;boolean multi=false;float lastSpan=0;Paint paint=new Paint(3);ScaleGestureDetector scaler;GestureDetector gestures;
+        Bitmap bitmap;float zoom=1,offsetX=0,offsetY=0;boolean multi=false;float lastSpan=0;Paint paint=new Paint(3);GestureDetector gestures;
         PdfCanvas(Context c,int mat){super(c);setBackgroundColor(mat);setContentDescription("PDF 正文，左右滑动翻页，双指缩放，双击放大");
-            scaler=new ScaleGestureDetector(c,new ScaleGestureDetector.SimpleOnScaleGestureListener(){@Override public boolean onScale(ScaleGestureDetector d){zoom=Math.max(1,Math.min(4,zoom*d.getScaleFactor()));clamp();invalidate();return true;}});
-            gestures=new GestureDetector(c,new GestureDetector.SimpleOnGestureListener(){@Override public boolean onDown(MotionEvent e){return true;}@Override public boolean onSingleTapConfirmed(MotionEvent e){togglePdfChrome();return true;}@Override public boolean onDoubleTap(MotionEvent e){zoom=zoom>1.1f?1:2.5f;offsetX=offsetY=0;clamp();invalidate();return true;}@Override public boolean onScroll(MotionEvent a,MotionEvent b,float dx,float dy){if(zoom>1.01f&&!multi){offsetX-=dx;offsetY-=dy;clamp();invalidate();}return true;}@Override public boolean onFling(MotionEvent a,MotionEvent b,float vx,float vy){if(a!=null&&!multi&&zoom<=1.01f&&Math.abs(b.getX()-a.getX())>dp(55)&&Math.abs(vx)>Math.abs(vy)*1.3f){movePdf(vx<0?1:-1);return true;}return false;}});
+            gestures=new GestureDetector(c,new GestureDetector.SimpleOnGestureListener(){@Override public boolean onDown(MotionEvent e){return true;}@Override public boolean onSingleTapConfirmed(MotionEvent e){togglePdfChrome();return true;}@Override public boolean onDoubleTap(MotionEvent e){if(zoom>1.1f){zoom=1;offsetX=offsetY=0;}else{zoom=2.5f;offsetX=(e.getX()-getWidth()/2f)*(1-zoom);offsetY=(e.getY()-getHeight()/2f)*(1-zoom);}clamp();invalidate();return true;}@Override public boolean onScroll(MotionEvent a,MotionEvent b,float dx,float dy){if(zoom>1.01f&&!multi){offsetX-=dx;offsetY-=dy;clamp();invalidate();}return true;}@Override public boolean onFling(MotionEvent a,MotionEvent b,float vx,float vy){if(a!=null&&!multi&&zoom<=1.01f&&Math.abs(b.getX()-a.getX())>dp(55)&&Math.abs(vx)>Math.abs(vy)*1.3f){movePdf(vx<0?1:-1);return true;}return false;}});
         }
         float fit(){return bitmap==null||getWidth()==0||getHeight()==0?1:Math.min((float)getWidth()/bitmap.getWidth(),(float)getHeight()/bitmap.getHeight());}
         void clamp(){if(bitmap==null)return;float sx=Math.max(0,(bitmap.getWidth()*fit()*zoom-getWidth())/2),sy=Math.max(0,(bitmap.getHeight()*fit()*zoom-getHeight())/2);offsetX=Math.max(-sx,Math.min(sx,offsetX));offsetY=Math.max(-sy,Math.min(sy,offsetY));}

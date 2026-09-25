@@ -20,10 +20,10 @@ for bid in [next(b['id'] for b in books if b['format']=='EPUB')]+[b['id'] for b 
   d.evaluate(f'loadChapter({ch})');d.wait()
   if d.evaluate('metrics().max>metrics().step*1.5'):found=True;break
  assert found,'No long chapter found'
- initial=d.evaluate('({chapter,top:metrics().top,max:metrics().max,step:metrics().step})')
- d.evaluate("$('next').click()");time.sleep(.2);after=d.evaluate('({chapter,top:metrics().top})')
- assert after['chapter']==initial['chapter'] and after['top']>0,(initial,after)
- d.evaluate("$('prev').click()");time.sleep(.2);back=d.evaluate('({chapter,top:metrics().top})');assert back['chapter']==initial['chapter'] and back['top']<2,back
+ initial=d.evaluate('({chapter,pos:metrics().pos,max:metrics().max,step:metrics().step})')
+ d.evaluate("$('next').click()");time.sleep(.2);after=d.evaluate('({chapter,pos:metrics().pos})')
+ assert after['chapter']==initial['chapter'] and after['pos']>0,(initial,after)
+ d.evaluate("$('prev').click()");time.sleep(.2);back=d.evaluate('({chapter,pos:metrics().pos})');assert back['chapter']==initial['chapter'] and back['pos']<2,back
  # Repeat forward/back several times.
  for _ in range(3):
   d.evaluate("$('next').click()");time.sleep(.1)
@@ -31,11 +31,11 @@ for bid in [next(b['id'] for b in books if b['format']=='EPUB')]+[b['id'] for b 
   d.evaluate("$('prev').click()");time.sleep(.1)
  assert d.evaluate('chapter')==ch
  # Cross forward to next chapter and back to previous chapter end.
- d.evaluate('frame.contentWindow.scrollTo(0,metrics().max);updateProgress()');d.evaluate("$('next').click()");d.wait();assert d.evaluate('chapter')==ch+1
+ d.evaluate('gotoPage(pagesIn(metrics())-1)');d.evaluate("$('next').click()");d.wait();assert d.evaluate('chapter')==ch+1
  d.evaluate("$('prev').click()");d.wait();assert d.evaluate('chapter')==ch
- assert d.evaluate('Math.abs(metrics().top-metrics().max)<3')
+ assert d.evaluate('Math.abs(metrics().pos-metrics().max)<3')
  # Bookmark return to shelf and reopen.
- d.evaluate('frame.contentWindow.scrollTo(0,metrics().max*.4);saveProgress()');saved=d.evaluate('ratio()');d.evaluate('goBack();openBook(books.find(b=>b.id=='+json.dumps(bid)+'))');d.wait();assert abs(d.evaluate('ratio()')-saved)<.01
+ d.evaluate('gotoPage(Math.round((pagesIn(metrics())-1)*.4))');saved=d.evaluate('ratio()');d.evaluate('goBack();openBook(books.find(b=>b.id=='+json.dumps(bid)+'))');d.wait();assert abs(d.evaluate('ratio()')-saved)<.01
  # Start/end boundaries.
  d.evaluate('loadChapter(0)');d.wait();assert d.evaluate("$('prev').disabled")
  d.evaluate('loadChapter(current.chapters.length-1,1)');d.wait();assert d.evaluate("$('next').disabled")

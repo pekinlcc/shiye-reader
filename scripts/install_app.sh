@@ -32,8 +32,28 @@ WARN
   exit 1
 fi
 
-"$ADB" shell mkdir -p "/sdcard/Android/data/$PKG/files/library"
-"$ADB" push --sync library/. "/sdcard/Android/data/$PKG/files/library/"
+REMOTE="/sdcard/Android/data/$PKG/files/library"
+if [ -f library/catalog.json ]; then
+  "$ADB" shell mkdir -p "$REMOTE"
+  # 平板上的 catalog.json 还记着应用内导入的书；直接用电脑这份覆盖，它们会从书架上消失。
+  # 先取回平板那份，把电脑书库里没有的条目接在后面，再推上去。
+  TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
+  "$ADB" pull "$REMOTE/catalog.json" "$TMP/device.json" >/dev/null 2>&1 || true
+  python3 - library/catalog.json "$TMP/device.json" "$TMP/catalog.json" <<'PY'
+import json,sys
+local=json.load(open(sys.argv[1],encoding='utf8'))
+try: device=json.load(open(sys.argv[2],encoding='utf8'))
+except Exception: device=[]
+known={b.get('id') for b in local}
+kept=[b for b in device if isinstance(b,dict) and b.get('id') and b['id'] not in known]
+json.dump(local+kept,open(sys.argv[3],'w',encoding='utf8'),ensure_ascii=False)
+if kept: print('保留平板上另外导入的 %d 本书' % len(kept))
+PY
+  "$ADB" push --sync library/. "$REMOTE/"
+  "$ADB" push "$TMP/catalog.json" "$REMOTE/catalog.json" >/dev/null
+else
+  echo "没有 library/catalog.json，跳过书库同步，只安装应用。"
+fi
 "$ADB" shell am force-stop "$PKG"
 "$ADB" shell am start -n "$PKG/.MainActivity"
 echo "已安装并启动拾页。"

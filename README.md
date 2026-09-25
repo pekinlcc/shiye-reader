@@ -12,7 +12,8 @@
 - EPUB / MOBI：**真正的分页排版**。正文用 CSS 多栏切成整页，纵向不可滚动，只能左右翻页，和纸书一致。章末自动进入下一章，目录可跳章节并支持搜索。
 - PDF：原版页面渲染，左右滑动或按钮翻页，双指缩放、双击放大、放大后拖动平移，可跳页。
 - 排版：字号、纸张颜色（素纸 / 暖页 / 夜读）、单栏 / 双栏可调（屏幕够宽时双栏生效），改动后按比例回到原来的位置并对齐页边界。
-- 全屏阅读：系统状态栏与导航栏默认隐藏，上下菜单栏也隐藏，点击正文即可显隐。
+- 全屏阅读：系统状态栏与导航栏默认隐藏，上下菜单栏也隐藏；点击正文时菜单栏浮在页面上方，正文不重排、不丢位置。关掉「全屏阅读」则菜单栏常驻，此时点击正文回到全屏。
+- 键盘与蓝牙翻页器：← → / PageUp PageDown 翻页。
 - 应用内导入：书架上「＋ 导入书籍」调系统文件选择器，可多选，支持 EPUB 和 PDF；长按书卡可移除。
 - 阅读进度自动保存，杀进程或重装后继续。全程离线，飞行模式照常读。
 
@@ -23,7 +24,8 @@ app/
   AndroidManifest.xml
   res/                       自适应图标、备份规则
   assets/                    index.html + app.js + style.css，阅读器界面
-  src/com/pekinlcc/reader/   MainActivity.java，宿主与原生 PDF 阅读器
+  src/com/pekinlcc/reader/   MainActivity.java 宿主与原生 PDF 阅读器；Importer.java 应用内导入；
+                             Html.java 把 XHTML 章节规范成 WebView 能正确解析的 UTF-8 HTML
 scripts/
   build_app.sh               直接调 aapt2 / javac / d8 / zipalign / apksigner
   install_app.sh             adb 安装并同步书库
@@ -59,7 +61,7 @@ bash scripts/install_app.sh    # adb 安装并同步书库
 python3 scripts/prepare_library.py
 ```
 
-脚本会解包 EPUB、用 [mobi](https://pypi.org/project/mobi/) 转换 MOBI（旧格式按 `<mbp:pagebreak>` 拆章，需要 Beautiful Soup）、复制 PDF，并生成 `library/catalog.json`。原始文件只读不改。之后 `install_app.sh` 会把 `library/` 推到 `/sdcard/Android/data/com.pekinlcc.reader/files/library/`。
+脚本会解包 EPUB、用 [mobi](https://pypi.org/project/mobi/) 转换 MOBI（旧格式按 `<mbp:pagebreak>` 拆章，需要 Beautiful Soup）、复制 PDF，并生成 `library/catalog.json`。原始文件只读不改。之后 `install_app.sh` 会把 `library/` 推到 `/sdcard/Android/data/com.pekinlcc.reader/files/library/`。平板上在应用内导入的书会被保留：脚本先取回平板的 `catalog.json`，把电脑书库里没有的条目合并进去再推送。反过来，电脑上删掉的书不会自动从平板移除，需要在书架上长按移除。
 
 书库不打包进 APK。覆盖更新保留书库与进度，卸载则一并删除。
 
@@ -71,13 +73,54 @@ python3 scripts/prepare_library.py
 - DevTools 只在可调试构建里开启（`MainActivity` 按 `FLAG_DEBUGGABLE` 判断），而清单里写的是 `android:debuggable="false"`。要用它得先临时改清单再重新构建。
 - 端口转发由 `tests/restart_epub.py` 建立（`adb forward tcp:9223 localabstract:webview_devtools_remote_<pid>`），单独跑 `device_test.py` 需要自己先转发。
 
-`tests/` 是作者自用的真机脚本，不是可复现的测试套件：它假定 `tools/platform-tools/adb` 存在，并会写入 `verification/`，这两处都不在仓库里。`ReaderInstrument` 需要用 `-e ids <id1>,<id2>` 传入 PDF 书籍 id。
+两项测试不需要设备，可以在任何机器上复现：
+
+```sh
+node tests/web/reader.test.js     # 需要 playwright；在 Chromium 里驱动阅读器界面：分页对齐、重排保位、锚点、手势
+javac -d build/t app/src/com/pekinlcc/reader/Html.java tests/HtmlTest.java && java -cp build/t com.pekinlcc.reader.HtmlTest
+```
+
+其余 `tests/` 是作者自用的真机脚本，不是可复现的测试套件：它假定 `tools/platform-tools/adb` 存在，并会写入 `verification/`，这两处都不在仓库里。`ReaderInstrument` 需要用 `-e ids <id1>,<id2>` 传入 PDF 书籍 id。
 
 ## 已知范围
 
-PDF 是原版页面阅读，没有 OCR、全文搜索或文字重排；夜读模式只影响 PDF 的界面外框，页面本身按原样渲染。EPUB / MOBI 支持目录搜索，暂无正文全文搜索。书库导入目前只能通过电脑脚本完成。
+PDF 是原版页面阅读，没有 OCR、全文搜索或文字重排；夜读模式只影响 PDF 的界面外框，页面本身按原样渲染。EPUB / MOBI 支持目录搜索，暂无正文全文搜索。应用内导入支持 EPUB 与 PDF，MOBI 仍需电脑脚本转换。
 
 ## 开发记录
+
+### 1.8 · 复查修复
+
+又做了一轮整体复查，逐条在 Chromium 里复现后再修，修完的行为由 `tests/web/reader.test.js` 和 `tests/HtmlTest.java` 覆盖：
+
+**阅读位置**
+
+- 每章最后一页错位：多栏排版的滚动宽度比整页数少半个栏距，浏览器把最后一次滚动截在网格外，最后一页左边距翻倍、文字贴到右边缘。双栏时若本章结束在左栏，最后半屏根本翻不到。现在把 `<html>` 撑到整页数宽。
+- 点正文显示菜单栏会丢位置：菜单栏进出会改变正文高度，`resize` 回调在旧排版已失效后才读比例，结果只保住了"第几页"。长章节里点一下菜单就能倒退十几页。现在全屏模式下菜单栏浮在正文上方，根本不重排。
+- 改字号、单双栏、旋转屏幕改为记住屏幕上第一个字，重排后回到这个字所在的页；连续 A+ A- 能回到原页，不再按比例漂移。
+- 目录或正文链接跳到章内锚点时用的是 `scrollIntoView` + 四舍五入，行内小锚点会落到前一页；现在按目标元素实际所在的页跳转。
+
+**正文渲染**
+
+- XHTML 按 `text/html` 解析时，`<a id="p12"/>` 这类自闭合标签不会闭合：后面整章都变成链接色，点正文也唤不出菜单；`<title/>` 更会吞掉整章。现在由 `Html.java` 在下发前展开成成对标签。
+- 响应头固定声明 UTF-8，GBK / GB2312 编码的旧书整章乱码。现在按 BOM → 合法 UTF-8 → 声明的编码 → GB18030 的顺序识别后统一转成 UTF-8。
+- 竖排（`writing-mode: vertical-rl`）的书会让分页完全失效，现在统一按横排显示。
+
+**交互**
+
+- 长按书卡会弹出两个移除对话框：WebView 在长按时本身就会触发 `contextmenu`，和 600 ms 计时器各弹一次。
+- PDF 渲染中的翻页会被直接丢弃，快速连翻像是没反应；现在新的翻页请求取代旧的。双击放大改为以点按位置为中心。
+- 横屏时侧边的挖孔摄像头会挡住正文，安全区现在四边都处理；PDF 界面在 WebView 脱离窗口时也能收到新的安全区。
+- 导入多个文件时错误提示不说是哪个文件失败；损坏的压缩包、缺 `container.xml` 的文件会给出可读的原因。文件名不是 UTF-8 的 EPUB（常见于 GBK）改为自动重试。
+- 回到书架时恢复原来的滚动位置；长提示按长度延长显示时间。
+
+**数据与脚本**
+
+- `install_app.sh` 会用电脑上的 `catalog.json` 整个覆盖平板那份，应用内导入的书从书架上消失（文件还在，只是看不到）。
+- 阅读时每 3 秒无条件写一次存储，现在只在位置变化时写。
+- PDF 内存不足时的降级位图用的是 `RGB_565`，`PdfRenderer` 只接受 `ARGB_8888`，降级分支必然失败。
+- 重新导入同一本书时先删旧目录再换新目录，中途失败会让书架上的书丢失文件；现在先挪开旧目录，成功后再删。
+- 电脑脚本遇到缺失的章节文件会放弃整本书，而应用内导入是跳过该章，两边现在一致。
+- `tests/` 与 `scripts/verify_reading.py` 仍在用分页重写前的纵向滚动接口（`metrics().top`），已更新。
 
 ### 1.7 · 真正的分页
 

@@ -30,8 +30,11 @@ def epub(src,dest,orig=None):
     chapters=[]
     for e in doc.iter():
         if local(e.tag)=='itemref' and e.attrib.get('linear','yes')!='no':
-            a=manifest[e.attrib['idref']]; p=resolve(base,a['href'])
-            if not (dest/p).is_file():raise ValueError('Missing chapter '+p)
+            # Tolerate a broken spine entry the same way the in-app importer does.
+            a=manifest.get(e.attrib.get('idref'))
+            if a is None:continue
+            p=resolve(base,a['href'])
+            if not (dest/p).is_file():print('  missing chapter skipped:',p,flush=True);continue
             label=''
             try:
                 page=ET.parse(dest/p)
@@ -113,8 +116,10 @@ prev={}
 if CATALOG.exists():
     try:prev={b['id']:b for b in json.loads(CATALOG.read_text(encoding='utf8'))}
     except Exception:prev={}
+SOURCES=ROOT/'电子书汇总'
+if not SOURCES.is_dir():raise SystemExit('找不到 %s：把 EPUB / MOBI / PDF 放进这个文件夹后再运行。'%SOURCES)
 books=[];failed=[]
-for src in sorted((ROOT/'电子书汇总').iterdir()):
+for src in sorted(SOURCES.iterdir()):
     suffix=src.suffix.lower()
     if suffix not in ('.epub','.mobi','.pdf'):continue
     print('Preparing',src.name,flush=True)
