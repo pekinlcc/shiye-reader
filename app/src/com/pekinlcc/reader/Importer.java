@@ -68,14 +68,28 @@ class Importer {
                 entry.put("cover", "");
             } else {
                 p.step("正在解包 " + name);
-                unzip(tmp, staging);
+                try {
+                    unzip(tmp, staging, StandardCharsets.UTF_8);
+                } catch (IllegalArgumentException badName) {
+                    // Entry names that are not UTF-8: Chinese tools often write them in GBK.
+                    deleteTree(staging);
+                    if (!staging.mkdirs()) throw new IOException("无法创建书籍目录");
+                    unzip(tmp, staging, java.nio.charset.Charset.forName("GBK"));
+                }
                 p.step("正在读取目录结构");
                 describeEpub(staging, fromFilename(name), entry, p);
                 entry.put("kind", "epub");
             }
-            deleteTree(dest);
-            if (!staging.renameTo(dest)) throw new IOException("无法写入书库目录");
+            // Swap via a side directory so a failed rename leaves the old copy on the shelf.
+            File old = new File(library, id + ".old");
+            deleteTree(old);
+            if (dest.exists() && !dest.renameTo(old)) throw new IOException("无法替换书库中的旧版本");
+            if (!staging.renameTo(dest)) {
+                old.renameTo(dest);
+                throw new IOException("无法写入书库目录");
+            }
             staging = null;
+            deleteTree(old);
             return entry;
         } finally {
             deleteTree(staging);                       // no-op on success
@@ -137,7 +151,9 @@ class Importer {
     // ---- EPUB ----------------------------------------------------------------
 
     private static void describeEpub(File dir, String fallbackTitle, JSONObject entry, Progress p) throws Exception {
-        Document container = xml(new File(dir, "META-INF/container.xml"));
+        File containerFile = new File(dir, "META-INF/container.xml");
+        if (!containerFile.isFile()) throw new IOException("不是有效的 EPUB：缺少 META-INF/container.xml");
+        Document container = xml(containerFile);
         String opf = null;
         for (Element e : byName(container, "rootfile")) {
             String v = e.getAttribute("full-path");
@@ -382,10 +398,10 @@ class Importer {
 
     // ---- zip -----------------------------------------------------------------
 
-    private static void unzip(File zipFile, File dest) throws Exception {
+    private static void unzip(File zipFile, File dest, java.nio.charset.Charset names) throws Exception {
         String root = dest.getCanonicalPath() + File.separator;
         long total = 0;
-        try (ZipInputStream zin = new ZipInputStream(new BufferedInputStream(new FileInputStream(zipFile)))) {
+        try (ZipInputStream zin = new ZipInputStream(new BufferedInputStream(new FileInputStream(zipFile)), names)) {
             ZipEntry e;
             byte[] buf = new byte[65536];
             int entries = 0;
@@ -408,6 +424,8 @@ class Importer {
                     }
                 }
             }
+        } catch (ZipException e) {
+            throw new IOException("压缩包已损坏，无法解包（" + e.getMessage() + "）");
         }
     }
 
@@ -485,6 +503,8 @@ class Importer {
         db.setEntityResolver((publicId, systemId) -> new org.xml.sax.InputSource(new StringReader("")));
         try (InputStream in = new BufferedInputStream(new FileInputStream(f))) {
             return db.parse(in);
+        } catch (org.xml.sax.SAXException e) {
+            throw new IOException("EPUB 中的 " + f.getName() + " 格式有误，无法解析");
         }
     }
 
