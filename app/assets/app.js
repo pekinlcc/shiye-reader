@@ -3,14 +3,16 @@ const $=id=>document.getElementById(id), frame=$('page');
 const bridge=(typeof Reader!=='undefined')?Reader:null;
 let books=[],state={},current=null,chapter=0,filter='all',loaded=false,appliedCols=1,pendingRatio=0,pendingAnchor='',saveTimer,toastTimer,userMoved=false,lastFocus=null,spot=null,menus=false,shelfY=0,frameGap=0,framePad=0;
 try{state=JSON.parse(bridge.getState())}catch(e){try{state=JSON.parse(localStorage.getItem('reading')||'{}')}catch(e){}}
-state.books=state.books||{};state.font=state.font||21;state.width=state.width||760;state.theme=state.theme||'paper';if(state.zen===undefined)state.zen=true;if(state.cols===undefined)state.cols=(state.width>=1100?2:1);
+state.books=state.books||{};state.font=state.font||21;state.width=state.width||760;state.theme=state.theme||'paper';if(state.zen===undefined)state.zen=true;if(state.tapTurn===undefined)state.tapTurn=true;if(state.volumeKeys===undefined)state.volumeKeys=true;if(state.cols===undefined)state.cols=(state.width>=1100?2:1);
 function persist(){const data=JSON.stringify(state);if(bridge)bridge.saveState(data);else localStorage.setItem('reading',data)}
 function node(tag,text,cls){const e=document.createElement(tag);if(text)e.textContent=text;if(cls)e.className=cls;return e}
 function url(path){return '/library/'+current.id+'/'+path.split('/').map(encodeURIComponent).join('/')}
 function asset(book,path){return '/library/'+book.id+'/'+path.split('/').map(encodeURIComponent).join('/')}
 function info(book){const p=state.books[book.id];if(!p)return '尚未开始';if(book.kind==='pdf'){let page=0;try{page=bridge.getPdfPage(book.id)}catch(e){}return '读到第 '+(page+1)+' 页'}const total=(book.chapters||[]).length||1;return '已读 '+Math.min(100,Math.round(((p.chapter||0)+(p.ratio||0))/total*100))+'%'}
 /** Keeps the Android status/navigation bars in step with whatever surface is on screen. */
-function syncChrome(){try{if(bridge&&bridge.setChrome)bridge.setChrome($('reader').hidden?'paper':state.theme)}catch(e){}}
+function syncChrome(){try{if(bridge&&bridge.setChrome)bridge.setChrome($('reader').hidden?'paper':state.theme);
+ // The host turns volume keys into page turns only while a book is open, and applies the tap zones to PDFs.
+ if(bridge&&bridge.setPaging)bridge.setPaging(!$('reader').hidden,!!state.tapTurn,!!state.volumeKeys)}catch(e){}}
 function renderShelf(){
  $('count').textContent=books.length+' 本';$('summary').textContent=books.length+' 本藏书 · 全部离线可读';
  const q=$('search').value.trim().toLowerCase();let found=books.filter(b=>(b.title+' '+b.author).toLowerCase().includes(q)&&(filter==='all'||filter==='reading'&&state.books[b.id]||b.kind===filter));
@@ -25,7 +27,7 @@ function openBook(b){
  if(b.kind!=='pdf'&&!(b.chapters||[]).length){toast('这本书没有可读的章节');return}
  current=b;const saved=state.books[b.id]||{};state.books[b.id]={...saved,time:Date.now()};persist();
  if(b.kind==='pdf'){if(bridge&&bridge.openPdf)bridge.openPdf(b.id,b.title);else toast('PDF 需要在拾页应用内打开');return}
- shelfY=scrollY;menus=false;chapter=Math.max(0,Math.min(saved.chapter||0,b.chapters.length-1));$('shelf').hidden=true;$('reader').hidden=false;$('bookTitle').textContent=b.title;applyTheme();loadChapter(chapter,saved.ratio||0);if(state.zen&&!state.zenHinted){state.zenHinted=1;persist();toast('全屏阅读中 · 点击页面可显示上下菜单栏')}}
+ shelfY=scrollY;menus=false;chapter=Math.max(0,Math.min(saved.chapter||0,b.chapters.length-1));$('shelf').hidden=true;$('reader').hidden=false;$('bookTitle').textContent=b.title;applyTheme();loadChapter(chapter,saved.ratio||0);if(!state.pagingHinted){state.pagingHinted=1;persist();toast(state.tapTurn?'点击左右两侧翻页 · 点击中间显示菜单栏':'点击页面可显示上下菜单栏')}}
 function loadChapter(index,ratio=0,anchor=''){
  loaded=false;userMoved=false;spot=null;chapter=index;pendingRatio=ratio;pendingAnchor=anchor;
  $('loading').textContent='正在翻开这一页…';$('loading').hidden=false;
@@ -42,8 +44,12 @@ function paintBody(){const b=document.body,inReader=!$('reader').hidden;
  * and the line stays put. With the bars pinned, a tap goes back to full screen.
  */
 function tapPage(){if(!state.zen){toggleZen();return}menus=!menus;paintBody()}
+/** Left / right 30% of the page turn it; the middle is for the menus. Floating menus are dismissed first. */
+function tapAt(x,width){if(menus){menus=false;paintBody();return}const dir=!state.tapTurn?0:x<width*0.3?-1:x>width*0.7?1:0;if(dir)turnPage(dir);else tapPage()}
+/** Called by the host for volume keys. */
+function hostTurn(dir){if($('reader').hidden||!$('shade').hidden)return;if(menus){menus=false;paintBody()}turnPage(dir)}
 function toggleZen(){menus=false;restyle(()=>{state.zen=!state.zen})}
-function applyTheme(){paintBody();const fv=state.font+' px';if($('fontValue').textContent!==fv)$('fontValue').textContent=fv;document.querySelectorAll('[data-theme]').forEach(b=>{const on=b.dataset.theme===state.theme;b.classList.toggle('selected',on);b.setAttribute('aria-pressed',on)});document.querySelectorAll('[data-cols]').forEach(b=>{const on=+b.dataset.cols===state.cols;b.classList.toggle('selected',on);b.setAttribute('aria-pressed',on)});$('zenToggle').classList.toggle('selected',!!state.zen);$('zenToggle').setAttribute('aria-pressed',!!state.zen);if(loaded)stylePage();syncChrome()}
+function applyTheme(){paintBody();const fv=state.font+' px';if($('fontValue').textContent!==fv)$('fontValue').textContent=fv;document.querySelectorAll('[data-theme]').forEach(b=>{const on=b.dataset.theme===state.theme;b.classList.toggle('selected',on);b.setAttribute('aria-pressed',on)});document.querySelectorAll('[data-cols]').forEach(b=>{const on=+b.dataset.cols===state.cols;b.classList.toggle('selected',on);b.setAttribute('aria-pressed',on)});for(const [id,on] of [['zenToggle',!!state.zen],['tapTurnToggle',!!state.tapTurn],['volumeToggle',!!state.volumeKeys]]){$(id).classList.toggle('selected',on);$(id).setAttribute('aria-pressed',on)}$('turnHint').textContent=state.tapTurn?'滑动或点击两侧翻页 · 点击中间显隐菜单':'左右滑动翻页 · 点击正文显隐菜单';if(loaded)stylePage();syncChrome()}
 function stylePage(){
  const d=frame.contentDocument,w=frame.contentWindow;if(!d||!d.body||!w)return;
  let st=d.getElementById('readerStyle');
@@ -122,7 +128,7 @@ frame.addEventListener('load',()=>{
  // The deferred pass corrects for images/fonts that settle after load, but must never fight the reader.
  const restoringChapter=chapter;const restore=()=>{if(!current||chapter!==restoringChapter||!loaded||userMoved)return;const m=metrics();let page=null;if(pendingAnchor){const target=findTarget(d,pendingAnchor);if(target)page=pageOfNode(target)}if(page===null)page=Math.round(pendingRatio*m.max/m.step);w.scrollTo(Math.min(m.max,page*m.step),0);markSpot();updateProgress();saveProgress()};
  requestAnimationFrame(restore);setTimeout(restore,250);$('loading').hidden=true;
- let touch=null;d.addEventListener('touchstart',e=>{if(e.touches.length===1)touch={x:e.touches[0].clientX,y:e.touches[0].clientY};else touch=null},{passive:true});d.addEventListener('wheel',()=>{userMoved=true},{passive:true});d.addEventListener('touchmove',e=>{if(!touch)return;const mx=e.touches[0].clientX-touch.x,my=e.touches[0].clientY-touch.y;if(Math.abs(mx)>8||Math.abs(my)>8)userMoved=true;if(Math.abs(mx)>Math.abs(my)*1.5&&Math.abs(mx)>25)e.preventDefault()},{passive:false});d.addEventListener('touchend',e=>{if(!touch)return;const dx=e.changedTouches[0].clientX-touch.x,dy=e.changedTouches[0].clientY-touch.y;const onLink=!!(e.target&&e.target.closest&&e.target.closest('a[href]'));touch=null;const selecting=!!w.getSelection().toString();if(Math.abs(dx)>65&&Math.abs(dx)>Math.abs(dy)*1.5&&!selecting){if(menus){menus=false;paintBody()}turnPage(dx<0?1:-1);return}if(Math.abs(dx)<12&&Math.abs(dy)<12&&!onLink&&!selecting)tapPage()},{passive:true});d.addEventListener('keydown',pageKeys);
+ let touch=null;d.addEventListener('touchstart',e=>{if(e.touches.length===1)touch={x:e.touches[0].clientX,y:e.touches[0].clientY};else touch=null},{passive:true});d.addEventListener('wheel',()=>{userMoved=true},{passive:true});d.addEventListener('touchmove',e=>{if(!touch)return;const mx=e.touches[0].clientX-touch.x,my=e.touches[0].clientY-touch.y;if(Math.abs(mx)>8||Math.abs(my)>8)userMoved=true;if(Math.abs(mx)>Math.abs(my)*1.5&&Math.abs(mx)>25)e.preventDefault()},{passive:false});d.addEventListener('touchend',e=>{if(!touch)return;const dx=e.changedTouches[0].clientX-touch.x,dy=e.changedTouches[0].clientY-touch.y;const onLink=!!(e.target&&e.target.closest&&e.target.closest('a[href]'));touch=null;const selecting=!!w.getSelection().toString();if(Math.abs(dx)>65&&Math.abs(dx)>Math.abs(dy)*1.5&&!selecting){if(menus){menus=false;paintBody()}turnPage(dx<0?1:-1);return}if(Math.abs(dx)<12&&Math.abs(dy)<12&&!onLink&&!selecting)tapAt(e.changedTouches[0].clientX,w.innerWidth)},{passive:true});d.addEventListener('keydown',pageKeys);
  w.addEventListener('scroll',()=>{updateProgress();clearTimeout(saveTimer);saveTimer=setTimeout(saveProgress,180)});
  // By the time this fires the old layout is gone, so a ratio read now is wrong; go back to the remembered spot.
  w.addEventListener('resize',()=>{if(!loaded)return;const r=spot?spot.ratio:ratio();stylePage();relocate(r)});
@@ -184,7 +190,7 @@ function restyle(mutate){
  if(loaded&&!spot)markSpot();const r=ratio();mutate();applyTheme();persist();if(!loaded)return;relocate(r);
 }
 function resizeFont(delta){restyle(()=>{state.font=Math.max(15,Math.min(36,state.font+delta))})}
-$('zenToggle').onclick=toggleZen;$('smaller').onclick=()=>resizeFont(-2);$('larger').onclick=()=>resizeFont(2);document.querySelectorAll('[data-theme]').forEach(b=>b.onclick=()=>{state.theme=b.dataset.theme;applyTheme();persist()});document.querySelectorAll('[data-cols]').forEach(b=>b.onclick=()=>{restyle(()=>{state.cols=+b.dataset.cols});setTimeout(()=>{if(state.cols===2&&appliedCols===1)toast('屏幕较窄，已按单栏排版')},280)});document.querySelectorAll('[data-filter]').forEach(b=>b.onclick=()=>{filter=b.dataset.filter;document.querySelectorAll('[data-filter]').forEach(c=>{c.classList.toggle('selected',c===b);c.setAttribute('aria-pressed',c===b)});renderShelf()});
+$('zenToggle').onclick=toggleZen;$('tapTurnToggle').onclick=()=>{state.tapTurn=!state.tapTurn;applyTheme();persist()};$('volumeToggle').onclick=()=>{state.volumeKeys=!state.volumeKeys;applyTheme();persist()};$('smaller').onclick=()=>resizeFont(-2);$('larger').onclick=()=>resizeFont(2);document.querySelectorAll('[data-theme]').forEach(b=>b.onclick=()=>{state.theme=b.dataset.theme;applyTheme();persist()});document.querySelectorAll('[data-cols]').forEach(b=>b.onclick=()=>{restyle(()=>{state.cols=+b.dataset.cols});setTimeout(()=>{if(state.cols===2&&appliedCols===1)toast('屏幕较窄，已按单栏排版')},280)});document.querySelectorAll('[data-filter]').forEach(b=>b.onclick=()=>{filter=b.dataset.filter;document.querySelectorAll('[data-filter]').forEach(c=>{c.classList.toggle('selected',c===b);c.setAttribute('aria-pressed',c===b)});renderShelf()});
 setInterval(saveProgress,3000);document.addEventListener('visibilitychange',saveProgress);
 syncChrome();
 fetch('/library/catalog.json').then(r=>{if(!r.ok)throw Error('书架还是空的');return r.json()}).then(b=>{books=b;renderShelf()}).catch(e=>{books=[];renderShelf();$('summary').textContent=e.message});

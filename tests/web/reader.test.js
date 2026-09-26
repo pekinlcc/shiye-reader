@@ -81,6 +81,19 @@ function serve(){
  await swipe(300,900);q=await pos();ok(q.page===p0.page&&q.aligned,'right swipe prev page',q);
  // keys
  await p.keyboard.press('ArrowRight');q=await pos();ok(q.page===p0.page+1,'ArrowRight next',q);await p.keyboard.press('PageUp');q=await pos();ok(q.page===p0.page,'PageUp prev',q);
+ // tap zones: sides turn, middle floats menus, a tap with menus up only dismisses them
+ const tapFrac=async f=>{await p.touchscreen.tap(box.x+box.width*f,box.y+box.height/2);await p.waitForTimeout(250)};
+ await tapFrac(0.9);q=await pos();ok(q.page===p0.page+1&&q.aligned,'tap right side turns forward',q);
+ await tapFrac(0.1);q=await pos();ok(q.page===p0.page,'tap left side turns back',q);
+ await tapFrac(0.5);ok(await p.evaluate(()=>document.body.classList.contains('menus')),'tap middle floats menus');
+ await tapFrac(0.9);q=await pos();ok(!(await p.evaluate(()=>document.body.classList.contains('menus')))&&q.page===p0.page,'side tap with menus up only dismisses them',q);
+ await p.evaluate(()=>{$('tapTurnToggle').click()});await tapFrac(0.9);q=await pos();
+ ok(q.page===p0.page&&await p.evaluate(()=>document.body.classList.contains('menus')),'with side taps off, a side tap shows menus',q);
+ await tapFrac(0.5);await p.evaluate(()=>{$('tapTurnToggle').click()});ok(await p.evaluate(()=>state.tapTurn&&$('tapTurnToggle').getAttribute('aria-pressed')==='true'),'side-tap toggle restores');
+ // volume keys arrive through hostTurn
+ await p.evaluate(()=>hostTurn(1));q=await pos();ok(q.page===p0.page+1,'hostTurn(1) next page',q);
+ await p.evaluate(()=>{showPanel('toc');hostTurn(1);closePanels()});q=await pos();ok(q.page===p0.page+1,'hostTurn ignored while a panel is open',q);
+ await p.evaluate(()=>hostTurn(-1));q=await pos();ok(q.page===p0.page,'hostTurn(-1) previous page',q);
  // TOC anchors
  for(const [i,id] of [[2,'sec'],[3,'inl']]){await p.evaluate(i=>{showPanel('toc');$('tocList').querySelectorAll('button')[i].click()},i);await wait();
   const r=await p.evaluate(id=>{const el=frame.contentDocument.getElementById(id);const rc=el.getClientRects()[0]||el.getBoundingClientRect();return {left:Math.round(rc.left),vw:frame.contentWindow.innerWidth,aligned:metrics().pos%metrics().step===0}},id);
@@ -107,5 +120,15 @@ function serve(){
  await p.evaluate(()=>{document.documentElement.style.setProperty('--safe-left','44px');document.documentElement.style.setProperty('--safe-right','0px')});await p.waitForTimeout(400);
  const s1=await p.evaluate(()=>({left:$('page').getBoundingClientRect().left,vw:frame.contentWindow.innerWidth,aligned:metrics().pos%metrics().step===0}));
  ok(s1.left===44&&s1.vw===1236&&s1.aligned&&await spotVisible(),'safe-left insets the reader and keeps pages aligned',s1);
+ // the host learns reading state and paging preferences through Reader.setPaging
+ {const c2=await b.newContext({viewport:{width:1280,height:800},hasTouch:true,isMobile:true});const p2=await c2.newPage();
+  await p2.addInitScript(()=>{let st='{}';window.__paging=[];window.Reader={getState:()=>st,saveState:v=>{st=v},setChrome:()=>{},getPdfPage:()=>0,setPaging:(r,t,v)=>__paging.push([r,t,v])}});
+  await p2.goto(base+'/index.html');await p2.waitForFunction(()=>books.length>0);
+  ok(JSON.stringify(await p2.evaluate(()=>__paging.at(-1)))==='[false,true,true]','shelf reports not reading, defaults on');
+  await p2.evaluate(()=>openBook(books[0]));await p2.waitForFunction(()=>loaded);
+  ok(JSON.stringify(await p2.evaluate(()=>__paging.at(-1)))==='[true,true,true]','open book reports reading');
+  await p2.evaluate(()=>$('volumeToggle').click());ok(JSON.stringify(await p2.evaluate(()=>__paging.at(-1)))==='[true,true,false]','volume toggle reaches host');
+  await p2.evaluate(()=>goBack());ok(JSON.stringify(await p2.evaluate(()=>__paging.at(-1)))==='[false,true,false]','back to shelf reports not reading');
+  await c2.close()}
  console.log(fails?`${fails} FAILED`:'ALL PASS');await b.close();server.close();fs.rmSync(LIB,{recursive:true,force:true});process.exit(fails?1:0)
 })().catch(e=>{console.error(e);process.exit(1)});

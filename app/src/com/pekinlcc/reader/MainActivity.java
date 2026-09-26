@@ -21,6 +21,7 @@ public class MainActivity extends Activity {
     final Object pdfLock=new Object();
     static final ExecutorService io=Executors.newSingleThreadExecutor(); static final int REQ_IMPORT=4011;
     LinearLayout pdfTop,pdfBottom; String chromeTheme="paper"; Object backCallback; int safeTop=0,safeBottom=0,safeLeft=0,safeRight=0; Dialog removeDialog;
+    volatile boolean epubOpen=false,tapTurn=true,volumeKeys=true; // mirrored from the page's settings
     final View.OnApplyWindowInsetsListener insetsListener=(v,insets)->{measureInsets(insets);return insets;};
 
     @Override public void onCreate(Bundle state){
@@ -154,6 +155,8 @@ public class MainActivity extends Activity {
         /** Called by the page so the system bars follow whatever surface is on screen. */
         @JavascriptInterface public void setChrome(String theme){final String t=theme;runOnUiThread(()->{if(pdf==null)applyChrome(t);});}
         @JavascriptInterface public void importBooks(){runOnUiThread(()->pickBooks());}
+        /** Whether an EPUB is on screen, and the paging preferences the native side has to honour. */
+        @JavascriptInterface public void setPaging(boolean reading,boolean tap,boolean volume){epubOpen=reading;tapTurn=tap;volumeKeys=volume;}
         @JavascriptInterface public void confirmRemove(String id,String title){
             if(id==null||!id.matches("[a-f0-9]{16}"))return;final String bid=id,name=title==null?"":title;
             runOnUiThread(()->{if(isFinishing()||(removeDialog!=null&&removeDialog.isShowing()))return;
@@ -283,9 +286,9 @@ public class MainActivity extends Activity {
             pdfLayout.addView(bottom);
             if(zenDefault()){
                 top.setVisibility(View.GONE);bottom.setVisibility(View.GONE);
-                if(!prefs.getBoolean("zenHintedPdf",false)){prefs.edit().putBoolean("zenHintedPdf",true).apply();
-                    Toast.makeText(this,"全屏阅读中 · 点击页面可显示上下菜单栏",Toast.LENGTH_LONG).show();}
             }
+            if(!prefs.getBoolean("pagingHintedPdf",false)){prefs.edit().putBoolean("pagingHintedPdf",true).apply();
+                Toast.makeText(this,tapTurn?"点击左右两侧翻页 · 点击中间显示菜单栏":"点击页面可显示上下菜单栏",Toast.LENGTH_LONG).show();}
             pdfLayout.setPadding(safeLeft,safeTop,safeRight,safeBottom);setContentView(pdfLayout);renderPdf();
         }catch(Throwable e){
             releasePdf();applyChrome("paper");setContentView(web);web.evaluateJavascript("exitPdf()",null);
@@ -356,8 +359,10 @@ public class MainActivity extends Activity {
     class PdfCanvas extends View {
         Bitmap bitmap;float zoom=1,offsetX=0,offsetY=0;boolean multi=false;float lastSpan=0;Paint paint=new Paint(3);GestureDetector gestures;
         PdfCanvas(Context c,int mat){super(c);setBackgroundColor(mat);setContentDescription("PDF 正文，左右滑动翻页，双指缩放，双击放大");
-            gestures=new GestureDetector(c,new GestureDetector.SimpleOnGestureListener(){@Override public boolean onDown(MotionEvent e){return true;}@Override public boolean onSingleTapConfirmed(MotionEvent e){togglePdfChrome();return true;}@Override public boolean onDoubleTap(MotionEvent e){if(zoom>1.1f){zoom=1;offsetX=offsetY=0;}else{zoom=2.5f;offsetX=(e.getX()-getWidth()/2f)*(1-zoom);offsetY=(e.getY()-getHeight()/2f)*(1-zoom);}clamp();invalidate();return true;}@Override public boolean onScroll(MotionEvent a,MotionEvent b,float dx,float dy){if(zoom>1.01f&&!multi){offsetX-=dx;offsetY-=dy;clamp();invalidate();}return true;}@Override public boolean onFling(MotionEvent a,MotionEvent b,float vx,float vy){if(a!=null&&!multi&&zoom<=1.01f&&Math.abs(b.getX()-a.getX())>dp(55)&&Math.abs(vx)>Math.abs(vy)*1.3f){movePdf(vx<0?1:-1);return true;}return false;}});
+            gestures=new GestureDetector(c,new GestureDetector.SimpleOnGestureListener(){@Override public boolean onDown(MotionEvent e){return true;}@Override public boolean onSingleTapUp(MotionEvent e){int d=side(e);if(d!=0)movePdf(d);return true;}@Override public boolean onSingleTapConfirmed(MotionEvent e){if(side(e)==0)togglePdfChrome();return true;}@Override public boolean onDoubleTap(MotionEvent e){int d=side(e);if(d!=0){movePdf(d);return true;}if(zoom>1.1f){zoom=1;offsetX=offsetY=0;}else{zoom=2.5f;offsetX=(e.getX()-getWidth()/2f)*(1-zoom);offsetY=(e.getY()-getHeight()/2f)*(1-zoom);}clamp();invalidate();return true;}@Override public boolean onScroll(MotionEvent a,MotionEvent b,float dx,float dy){if(zoom>1.01f&&!multi){offsetX-=dx;offsetY-=dy;clamp();invalidate();}return true;}@Override public boolean onFling(MotionEvent a,MotionEvent b,float vx,float vy){if(a!=null&&!multi&&zoom<=1.01f&&Math.abs(b.getX()-a.getX())>dp(55)&&Math.abs(vx)>Math.abs(vy)*1.3f){movePdf(vx<0?1:-1);return true;}return false;}});
         }
+        /** -1 / 1 for a tap on the left / right 30% while not zoomed in; side taps turn at once and a quick second tap turns again instead of zooming. */
+        int side(MotionEvent e){if(!tapTurn||zoom>1.01f||getWidth()==0)return 0;float x=e.getX()/getWidth();return x<0.3f?-1:x>0.7f?1:0;}
         float fit(){return bitmap==null||getWidth()==0||getHeight()==0?1:Math.min((float)getWidth()/bitmap.getWidth(),(float)getHeight()/bitmap.getHeight());}
         void clamp(){if(bitmap==null)return;float sx=Math.max(0,(bitmap.getWidth()*fit()*zoom-getWidth())/2),sy=Math.max(0,(bitmap.getHeight()*fit()*zoom-getHeight())/2);offsetX=Math.max(-sx,Math.min(sx,offsetX));offsetY=Math.max(-sy,Math.min(sy,offsetY));}
         void setPage(Bitmap b){Bitmap old=bitmap;bitmap=b;zoom=1;offsetX=offsetY=0;invalidate();if(old!=null&&old!=b)old.recycle();}
@@ -394,6 +399,24 @@ public class MainActivity extends Activity {
         web.evaluateJavascript("hostBack()",value->{if(!"true".equals(value))finish();});
     }
     @Override public void onBackPressed(){handleBack();}
+
+    /** Volume keys turn pages while a book is open (and only then); Page Up/Down and ←/→ also drive the PDF view. */
+    @Override public boolean dispatchKeyEvent(KeyEvent e){
+        int dir=pageKey(e.getKeyCode());
+        if(dir==0)return super.dispatchKeyEvent(e);
+        if(e.getAction()==KeyEvent.ACTION_DOWN&&e.getRepeatCount()==0){
+            if(pdf!=null)movePdf(dir);else web.evaluateJavascript("hostTurn("+dir+")",null);
+        }
+        return true; // swallow the UP too, so the volume panel never appears
+    }
+    int pageKey(int k){
+        if(k==KeyEvent.KEYCODE_VOLUME_UP||k==KeyEvent.KEYCODE_VOLUME_DOWN)
+            return volumeKeys&&(pdf!=null||epubOpen)?(k==KeyEvent.KEYCODE_VOLUME_DOWN?1:-1):0;
+        if(pdf==null)return 0; // the page handles its own keys
+        if(k==KeyEvent.KEYCODE_PAGE_DOWN||k==KeyEvent.KEYCODE_DPAD_RIGHT)return 1;
+        if(k==KeyEvent.KEYCODE_PAGE_UP||k==KeyEvent.KEYCODE_DPAD_LEFT)return -1;
+        return 0;
+    }
 
     @Override protected void onPause(){
         super.onPause();
